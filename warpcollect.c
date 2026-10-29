@@ -3,11 +3,63 @@
 #include <string.h>
 #include <errno.h>
 
-const char amigaversion[] = "$VER: Warpcollect 0.4 (04.05.2021)";
+const char amigaversion[] = "$VER: Warpcollect 0.5 (29.10.2026)";
 
 char *progname;
 
+/* The linker to drive.  Build the variant that uses the ld in
+   /gg/ppc-warpos/bin (see the readme there) with
+   -DLD_PATH='"/gg/ppc-warpos/bin/ld"'. */
+#ifndef LD_PATH
 #if defined (_LINUX_)
+#define LD_PATH "/gg/bin/ppc-morphos-ld"
+#else
+#define LD_PATH "/gg/bin/ld"
+#endif
+#endif
+
+#if defined (_LINUX_)
+#include <unistd.h>
+
+/* Look for an executable called name in $PATH.  Returns a malloc'd full
+   path, or NULL when the tool is not installed. */
+static char *find_in_path(const char *name)
+{
+	const char *path = getenv("PATH");
+	size_t namelen = strlen(name);
+	char *full;
+
+	if (path == NULL || *path == '\0')
+		return NULL;
+
+	full = malloc(strlen(path) + namelen + 3);
+	if (full == NULL)
+		return NULL;
+
+	for (;;) {
+		const char *end = strchr(path, ':');
+		size_t dirlen = (end == NULL) ? strlen(path) : (size_t)(end - path);
+
+		if (dirlen == 0) {	/* an empty entry means the current directory */
+			full[0] = '.';
+			dirlen = 1;
+		} else
+			memcpy(full, path, dirlen);
+
+		full[dirlen] = '/';
+		memcpy(full + dirlen + 1, name, namelen + 1);
+
+		if (access(full, X_OK) == 0)
+			return full;
+
+		if (end == NULL)
+			break;
+		path = end + 1;
+	}
+
+	free(full);
+	return NULL;
+}
 
 #else
 /* From libnix */
@@ -113,6 +165,29 @@ static void copyfile(char *infile, char *outfile)
 	fclose(out);
 	fclose(in);
 }
+
+/* Is a command of this name available?  AmigaOS has no $PATH to scan,
+   so probe the places this SDK keeps its tools. */
+static int tool_exists(const char *name)
+{
+	static const char *dirs[] = { "", "GG:bin/", "C:" };
+	char probe[256];
+	FILE *f;
+	unsigned int d;
+
+	for(d = 0; d < sizeof(dirs) / sizeof(dirs[0]); d++) {
+		if (strlen(dirs[d]) + strlen(name) >= sizeof(probe))
+			continue;
+		strcpy(probe, dirs[d]);
+		strcat(probe, name);
+		f = fopen(probe, "rb");
+		if (f != NULL) {
+			fclose(f);
+			return 1;
+		}
+	}
+	return 0;
+}
 #endif
 int main(int argc, char **argv)
 {
@@ -145,17 +220,24 @@ int main(int argc, char **argv)
 	}
 
 	strcpy(temp, "a.out");
-#if defined (_LINUX_)    
-	strcpy(exec, "/gg/bin/ppc-morphos-ld");
-#else
-    strcpy(exec, "/gg/bin/ld");
-#endif
+	strcpy(exec, LD_PATH);
     
-	/* Get the output file name and copy the commandline */
-	for(i = 1; i < argc; i++) {
-		sprintf(exec, "%s %s", exec, argv[i]);
-		if (strcmp(argv[i], "-o") == 0 && argc-1 > 1)
-			strcpy(temp, argv[i+1]);
+	/* Get the output file name and copy the commandline.
+	   Appending with sprintf(exec, "%s %s", exec, argv[i]) makes the
+	   destination buffer alias a source argument.  That is undefined
+	   behaviour; on glibc only the last argument survives, so the linker
+	   command line collapsed to the endfile spec and system() tried to
+	   execute end.o.  Append in place instead. */
+	{
+		size_t pos = strlen(exec);
+
+		for(i = 1; i < argc; i++) {
+			exec[pos++] = ' ';
+			strcpy(exec + pos, argv[i]);
+			pos += strlen(argv[i]);
+			if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
+				strcpy(temp, argv[i+1]);
+		}
 	}
 
 	/* elf2exe2 doesn't support unixpaths :( */
@@ -168,42 +250,81 @@ int main(int argc, char **argv)
 		return 20;
 	}
 #endif
-	sprintf(exec2, "elf2exe2 %s %s", outname, outname);
 	sprintf(temp, "%s.warpelf", outname);
 #if defined (_LINUX_)
-	sprintf(exec3, "ppc-morphos-strip -R .gnu.attributes %s", outname);
+	sprintf(exec3, "/gg/bin/ppc-morphos-strip -R .gnu.attributes %s", outname);
     sprintf(exec4, "cp %s %s", outname, temp);
 #else
     sprintf(exec3, "strip -R .gnu.attributes %s", outname);
 #endif
 	i = system(exec); /* Execute the linker */
 	if (i != 0)
-		return errno;
+		return 20; /* errno says nothing about a child exit status */
 	
     env = getenv("KEEPWARPELF");
-	if (env != NULL && atoi(env) > 0)
+	if (env != NULL && atoi(env) > 0) {
 #if defined (_LINUX_)
         i = system(exec4);
-        if (i != 0) {
-            i = errno;
-            return i;
-        }
+        if (i != 0)
+            return 20;
 #else
 		copyfile(outname, temp);
-#endif    
+#endif
+	}
 	i = system(exec3); /* Execute the strip */
 	if (i != 0)
-		return errno;
+		return 20;
 
 #if defined (_LINUX_)
-    
+	/* Turn the linked ELF into a WarpOS executable with elf2exe3.  That is
+	   an optional host tool: when it is not installed, leave the ELF. */
+	{
+		char *conv = find_in_path("elf2exe3");
+
+		if (conv != NULL) {
+			char *exec5 = malloc(strlen(conv) + 2 * strlen(outname) + 3);
+
+			if (exec5 == NULL) {
+				fprintf(stderr, "%s: Out of memory\n", progname);
+				free(conv);
+				return 20;
+			}
+			sprintf(exec5, "%s %s %s", conv, outname, outname);
+			i = system(exec5); /* Execute elf2exe3 */
+			free(exec5);
+			free(conv);
+			if (i != 0) {
+				remove(outname); /* half-converted in place */
+				return 20;
+			}
+		}
+	}
 #else
-	i = system(exec2); /* Execute elf2exe2 */
-	if (i != 0) {
-		i = errno;
-		remove(outname);
-		remove(temp);
-		return i;
+	/* Prefer elf2exe3, falling back to the older elf2exe2 both when
+	   elf2exe3 is not installed and when it fails -- elf2exe3 validates
+	   before it writes, so a failed run leaves the linked ELF intact and
+	   the fallback gets a pristine input.  With no converter installed
+	   at all, leave the ELF; one that ran and failed is an error. */
+	{
+		int installed = 0, converted = 0;
+
+		if (tool_exists("elf2exe3")) {
+			installed = 1;
+			sprintf(exec2, "elf2exe3 %s %s", outname, outname);
+			converted = (system(exec2) == 0);
+		}
+
+		if (!converted && tool_exists("elf2exe2")) {
+			installed = 1;
+			sprintf(exec2, "elf2exe2 %s %s", outname, outname);
+			converted = (system(exec2) == 0);
+		}
+
+		if (installed && !converted) {
+			remove(outname);
+			remove(temp);
+			return 20;
+		}
 	}
 #endif
     free(exec);
