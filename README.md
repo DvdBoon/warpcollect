@@ -121,3 +121,18 @@ document distinct names — `elf2exe3 [options] input.elf output` and
 `Elf2Exe program.elf program.exe [verbose]` — and neither says the two may
 be the same file, so this relies on unspecified behaviour. Tested against
 elf2exe3 0.1.
+
+## Credits
+
+warpcollect was written by **Jarmo Laakkonen**, who took it through 0.3 in
+2000 — his readme calls it "a quick hack to integrate Elf2Exe2 with
+GCC-WarpUP", and records that 0.2 fixed a crash on big command lines and
+0.3 improved error handling. That readme is preserved upstream in
+[Sakura-IT/WarpOS_Ports](https://github.com/Sakura-IT/WarpOS_Ports/tree/master/warpcollect),
+alongside the Makefiles for the host, MorphOS and WarpOS builds.
+
+**Dennis Boon** adapted it for MorphOS and for Unix hosts as part of the
+gcc-mos2wos SDK, distributed on Aminet as `dev/gcc/gcc-mos2wos`, and
+released 0.4 in 2021. That is the version this repository starts from.
+
+0.5 is the release here.
