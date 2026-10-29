@@ -3,7 +3,7 @@
 #include <string.h>
 #include <errno.h>
 
-const char amigaversion[] = "$VER: Warpcollect 0.5 (29.10.2026)";
+const char amigaversion[] = "$VER: Warpcollect 0.5 (30.10.2026)";
 
 char *progname;
 
